@@ -196,7 +196,7 @@ async function callClaude(
   }
 
   args.push("--output-format", "text");
-args.push("--dangerously-skip-permissions");
+args.push("--permission-mode", "bypassPermissions");
   console.log(`Calling Claude: ${prompt.substring(0, 50)}...`);
 
   try {
