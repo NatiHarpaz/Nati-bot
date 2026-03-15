@@ -13,6 +13,7 @@ import { writeFile, mkdir, readFile, unlink } from "fs/promises";
 import { join, dirname } from "path";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { transcribe } from "./transcribe.ts";
+import { parseReminderWithClaude, saveReminder, listReminders } from "./reminders.ts";
 import {
   processMemoryIntents,
   getMemoryContext,
@@ -242,12 +243,73 @@ async function callClaude(
 bot.on("message:text", async (ctx) => {
   const text = ctx.message.text;
   console.log(`Message: ${text.substring(0, 50)}...`);
-
   await ctx.replyWithChatAction("typing");
-
   await saveMessage("user", text);
 
-  // Gather context: semantic search + facts/goals
+  // --- LIST REMINDERS ---
+  const lower = text.toLowerCase();
+  if (lower.includes("list reminders") || lower.includes("show reminders") || lower.includes("my reminders") || lower.includes("what reminders")) {
+    const reminders = await listReminders();
+    if (reminders.length === 0) {
+      await ctx.reply("You have no active reminders.");
+      return;
+    }
+    const lines = reminders.map((r, i) => {
+      const next = new Date(r.next_run).toLocaleString("en-US", {
+        timeZone: r.timezone,
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      return `${i + 1}. ${r.message}\n   📅 Next: ${next} (${r.schedule_type})`;
+    });
+    await ctx.reply(`Your reminders:\n\n${lines.join("\n\n")}`);
+    return;
+  }
+
+  // --- SET REMINDER ---
+  const reminderKeywords = ["remind me", "reminder", "set a reminder", "don't let me forget", "alert me", "notify me"];
+  if (reminderKeywords.some((kw) => lower.includes(kw))) {
+    await ctx.reply("⏳ Setting up your reminder...");
+    const reminder = await parseReminderWithClaude(text, USER_TIMEZONE);
+
+    if (!reminder) {
+      await ctx.reply(
+        "Sorry, I couldn't parse that reminder. Try something like:\n" +
+        "• \"Remind me every Tuesday at noon to make lunch\"\n" +
+        "• \"Remind me tomorrow at 3pm to call the dentist\"\n" +
+        "• \"Remind me every day at 9am to check emails\""
+      );
+      return;
+    }
+
+    const id = await saveReminder(reminder);
+    if (!id) {
+      await ctx.reply("Sorry, I couldn't save the reminder. Please try again.");
+      return;
+    }
+
+    const nextTime = new Date(reminder.next_run).toLocaleString("en-US", {
+      timeZone: USER_TIMEZONE,
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+    await ctx.reply(
+      `✅ Reminder set!\n\n` +
+      `📝 "${reminder.message}"\n` +
+      `📅 ${reminder.schedule_type === "once" ? "On" : "Next"}: ${nextTime}\n` +
+      `🔁 Repeats: ${reminder.schedule_type}`
+    );
+    return;
+  }
+
+  // --- REGULAR CLAUDE MESSAGE ---
   const [relevantContext, memoryContext] = await Promise.all([
     getRelevantContext(supabase, text),
     getMemoryContext(supabase),
@@ -255,14 +317,11 @@ bot.on("message:text", async (ctx) => {
 
   const enrichedPrompt = buildPrompt(text, relevantContext, memoryContext);
   const rawResponse = await callClaude(enrichedPrompt, { resume: true });
-
-  // Parse and save any memory intents, strip tags from response
   const response = await processMemoryIntents(supabase, rawResponse);
 
   await saveMessage("assistant", response);
   await sendResponse(ctx, response);
 });
-
 // Voice messages
 bot.on("message:voice", async (ctx) => {
   const voice = ctx.message.voice;
