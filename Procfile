@@ -1,1 +1,1 @@
-web: npm install -g @anthropic-ai/claude-code && bun run start
+web: npm install -g @anthropic-ai/claude-code --yes && claude --version && bun run src/relay.ts
